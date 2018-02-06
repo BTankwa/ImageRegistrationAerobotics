@@ -3,14 +3,13 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from aerotools.gps_tools import get_meters_per_pixel, lat_lon_to_pixel, pixel_to_lat_lon, metres_between_gps
+from aerotools.geotiff_tools import clip_raster_with_client_orchard, tiff_read, tiff_write, tiff_info,orchard_polygon
 import gdal
 from numpy import median
 from math import sqrt
 from ImageClass import ImageObject
-from os.path import splitext
-from os.path import basename
-from os.path import join
-from os.path import dirname
+from os.path import splitext, dirname, join, basename
+from osgeo import ogr
 
 
 
@@ -149,9 +148,14 @@ def filter_gps_distance(correct_gps,distorted_gps):
         dist.append(metres_between_gps(y1,x1,y2,x2))
 
     mean = np.mean(dist)
+
     std = np.std(dist)/sqrt(len(dist))
-
-
+    """
+    print 'mean = ', mean
+    print 'std =', std
+    print 'min = ', np.min(dist)
+    print 'max = ', np.max(dist)
+    """
     sel_gps_correct  = []
     sel_gps_distorted = []
     for j in range(len(correct_gps)):
@@ -168,7 +172,7 @@ def filter_gps_distance(correct_gps,distorted_gps):
 
 def draw_matches_image(detector_type, im_correct, im_distorted, number_of_matches_used):
     """
-    Funtion draws image showing 2 input images and matching features
+    Function draws image showing 2 input images and matching features
 
     :param detector_type: string that represents the detector to be used
     :param im_correct: correct image np.array
@@ -196,10 +200,47 @@ def draw_matches_image(detector_type, im_correct, im_distorted, number_of_matche
     # Match descriptors.
     matches = bf.match(descriptors1, descriptors2)
 
-    # Draw first 10 matches.
-    img3 = cv2.drawMatches(im_correct, keyPoints1, im_distorted, keyPoints2, matches[:number_of_matches_used], None, flags=2)
 
-    plt.imshow(img3), plt.show()
+
+    ## write out images with circles indicating the identified features
+    base_kp = keyPoints1
+    source_kp = keyPoints2
+    base_img_data = im_correct
+    source_img_data = im_distorted
+
+    i = 0
+    j = 0
+    k = 0
+    for match in matches:
+        (x1, y1) = base_kp[match.queryIdx].pt
+        radius1 = base_kp[match.queryIdx].size
+        cv2.circle(base_img_data, (int(x1), int(y1)), int(radius1), (255 - i, 255 - j, 0 + k, 255), 6)
+        (x2, y2) = source_kp[match.trainIdx].pt
+        radius2 = source_kp[match.trainIdx].size
+        cv2.circle(source_img_data, (int(x2), int(y2)), int(radius2), (255 - i, 255 - j, 0 + k, 255), 6)
+        i +=5
+        j+=15
+        k+=75
+        if i== 255:
+            i = 0
+        if j == 255:
+            j = 0
+        if k ==255:
+            k = 0
+
+    tiff_write('corr_img.tif', base_img_data)
+    tiff_write('dis_img.tif', source_img_data)
+    im1 = cv2.imread('corr_img.tif')
+    im2 = cv2.imread('dis_img.tif')
+    plt.imshow(im1), plt.show()
+    plt.imshow(im2), plt.show()
+    os.remove('corr_img.tif')
+    os.remove('dis_img.tif')
+
+    # Draw first 10 matches.
+    #img3 = cv2.drawMatches(im_correct, keyPoints1, im_distorted, keyPoints2, matches[:number_of_matches_used], None, flags=2)
+
+    #plt.imshow(img3), plt.show()
 
 
 
@@ -215,7 +256,7 @@ def register_image(correct_img_gps,distorted_img_gps,correct_path,distorted_path
     :param distorted_path: path to misaligned image
     :param number_match_used: number of matches to use in alignment
     :param out_path:
-    :return:
+    :return: true if image registered. false otherwise
     """
     image_object_correct = ImageObject(correct_path)  # aligned
     image_object_correct.define_child_image(distorted_path)  # needs to align to other image
@@ -251,7 +292,7 @@ def register_image(correct_img_gps,distorted_img_gps,correct_path,distorted_path
 
 
 
-def rubber_duck(path_correct_image,path_distorted_image,path_output_image,feature_detector):
+def rubber_duck(path_correct_image,path_distorted_image,path_output_image,feature_detector,show_mat_image):
     """
     This function performs image registration of a distorted image on to a correct image
 
@@ -259,7 +300,8 @@ def rubber_duck(path_correct_image,path_distorted_image,path_output_image,featur
     :param path_distorted_image: path to misaligned image
     :param path_output_image: path to misaligned image
     :param feature_detector: string that represents the detector to be used - ORB , BRISK , KAZE
-    :return:
+    :param show_mat_image: display images showing identified and matched features on both images if == True
+    :return true if image registered. false otherwise
     """
 
     img_correct, img_correct_dataset = image_read(path_correct_image)
@@ -275,8 +317,8 @@ def rubber_duck(path_correct_image,path_distorted_image,path_output_image,featur
     resize_im = True
     resized = False
     if resize_im:
-        path_correct_image = resized_image_path
         resized_image_path = resize_img(resizing_factor, path_correct_image)
+        path_correct_image = resized_image_path
         resized = True
 
     img_correct, img_distorted_dataset = image_read(path_correct_image)
@@ -291,7 +333,12 @@ def rubber_duck(path_correct_image,path_distorted_image,path_output_image,featur
     # if number_of_matched_coord > len(grayscale_px_coord):  # if selected features from filtering anomalies < number_of_matched_coord
     number_of_matched_coord = len(grayscale_px_coord)
     #    print 'number_of_matched_coord =', number_of_matched_coord
-
+    if number_of_matched_coord < 3:
+        print 'Number of matches detected < 3. Too small to register image'
+        if resized:
+            os.remove(resized_image_path)
+            os.rmdir(dirname(resized_image_path))
+        return False
 
 
     register_image(grayscale_px_coord, visible_px_coord, path_correct_image, path_distorted_image,
@@ -304,7 +351,8 @@ def rubber_duck(path_correct_image,path_distorted_image,path_output_image,featur
 
 
     ### optional - draw image showing the correct and distorted image and the detected matched features
-    draw_matches_image(detector_used, img_correct, img_distorted, number_of_matched_coord)
+    if show_mat_image == True:
+        draw_matches_image(detector_used, img_correct, img_distorted, number_of_matched_coord)
 
 
 
@@ -324,11 +372,15 @@ if __name__ == "__main__":
     #distorted_image_path = '/Users/brendontankwa/Desktop/Aerobotics/IRTestCases/client_1731_orchard_9368/orthomosaic_visible.tif'
     #distorted_image_path = '/Users/brendontankwa/Desktop/Aerobotics/grayndvi.tif'
     temp_output_path = '/Users/brendontankwa/Desktop/Aerobotics/IRTestCases/temp.tif'
-    output_path = '/Users/brendontankwa/Desktop/Aerobotics/IRTestCases/res/T42_ORB_scdet_fsmgps_res.tif'
+    output_path = '/Users/brendontankwa/Desktop/Aerobotics/IRTestCases/res/T43_ORB_scdet_fsmgps_res.tif'
     #output_path  = '/Users/brendontankwa/Desktop/Aerobotics/IRTestCases/res/res_cl1731_9368/T2_ORB_4_sc1_fsmgps_res.tif'
+
+
 
 
     detector_used = 'ORB'
 
 
-    rubber_duck(correct_image_path,distorted_image_path,output_path,detector_used)
+    show_match_image = False
+
+    rubber_duck(correct_image_path,distorted_image_path,output_path,detector_used, show_match_image)
