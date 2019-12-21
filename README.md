@@ -7,9 +7,9 @@ with different spectral bands.
 
 ## 1. File list
 
-ImageRegistrationPT1.py             Image registration implementation \n
-ImageClass.py                              Image class used to create image objects in image registration implementation \n
-Readme                                        This file
+ImageRegistrationPT1.py:             Image registration implementation <br />
+ImageClass.py:                              Image class used to create image objects in image registration implementation <br />
+Readme:                                        This file<br />
 
 
 
